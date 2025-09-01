@@ -28,17 +28,29 @@ jobs:
           # Qwen2.5 1.5B Instruct GGUF - quantizzazione raccomandata Q4_K_M
           curl -fL -o models/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf \
             https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf
-
-      # ---- Build llama.cpp (con libcurl per evitare warning) ----
+      
+      # deps per la build + ccache
       - name: Install deps for build
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcurl4-openssl-dev
-
+          sudo apt-get install -y libcurl4-openssl-dev ccache
+      
+      # cache per la compilazione (più veloce ai run successivi)
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-llama
+      
+      # build llama.cpp usando ccache
       - name: Build llama.cpp
+        env:
+          CC: "ccache gcc"
+          CXX: "ccache g++"
         run: |
           git clone --depth=1 https://github.com/ggerganov/llama.cpp
-          cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release
+          cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build llama.cpp/build -j
           echo "LLAMA_BIN=$(pwd)/llama.cpp/build/bin/llama-cli" >> $GITHUB_ENV
 
