@@ -162,6 +162,7 @@ def run_llama(system_prompt: str, user_prompt: str) -> str:
     cmd = [
         LLAMA_BIN,
         "-m", LLM_MODEL_PATH,
+        "--chat-template", "qwen2",  # <-- FORZA IL TEMPLATE CORRETTO PER QWEN2
         "--system-prompt", system_prompt,
         "-p", user_prompt,
         "-n", str(MAX_TOKENS),
@@ -170,23 +171,28 @@ def run_llama(system_prompt: str, user_prompt: str) -> str:
         "--temp", "0.2",          # Aggiungi un po' di creatività controllata
         "--no-display-prompt",    # Questo è obsoleto, ma alcune versioni lo tollerano.
                                   # Rimuovilo se causa problemi. --log-disable è più moderno.
-        "--log-disable",
     ]
 
     # Catturiamo *entrambi* i flussi per diagnostica nei log di Actions
+    print(f"Executing command: {' '.join(cmd)}") # Aggiungi questo per vedere il comando esatto
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+
     if res.returncode != 0:
-        print("LLAMA STDERR (first 500):", (res.stderr or "")[:500].replace("\n"," "))
-        print("LLAMA STDOUT (first 200):", (res.stdout or "")[:200].replace("\n"," "))
+        # Se c'è un errore, ora vedremo molto di più grazie alla rimozione di --log-disable
+        print("LLAMA STDERR:", res.stderr)
+        print("LLAMA STDOUT:", res.stdout)
         raise RuntimeError(f"llama-cli exited with code {res.returncode}")
+
     out = (res.stdout or "").strip()
     if not out:
         print("LLAMA produced empty stdout.")
+        # Anche con output vuoto, stampiamo stderr per eventuali warning
+        print("LLAMA STDERR (in case of warnings):", res.stderr)
         raise RuntimeError("empty output")
+        
     # opzionale: piccolo peek nei log
     print("LLAMA OUT (first 120):", out[:120].replace("\n"," "))
     return out
-
 
 def clean_model_output(txt: str) -> str:
     start = txt.find("===== PAPER =====")
