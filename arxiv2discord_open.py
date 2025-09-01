@@ -158,6 +158,7 @@ def run_llama(system_prompt: str, user_prompt: str) -> str:
     if not shutil.which(LLAMA_BIN):
         raise RuntimeError(f"llama.cpp binary not found at {LLAMA_BIN}")
 
+    # Lista comandi AGGIORNATA
     cmd = [
         LLAMA_BIN,
         "-m", LLM_MODEL_PATH,
@@ -166,12 +167,10 @@ def run_llama(system_prompt: str, user_prompt: str) -> str:
         "-n", str(MAX_TOKENS),
         "-c", str(CTX),
         "--seed", str(SEED),
-        "--no-warmup",
-        "--no-display-prompt",
+        "--temp", "0.2",          # Aggiungi un po' di creatività controllata
+        "--no-display-prompt",    # Questo è obsoleto, ma alcune versioni lo tollerano.
+                                  # Rimuovilo se causa problemi. --log-disable è più moderno.
         "--log-disable",
-        "--simple-io",
-        "-no-cnv",              # <<< IMPORTANTISSIMO: niente chat template
-        "--no-color",
     ]
 
     # Catturiamo *entrambi* i flussi per diagnostica nei log di Actions
