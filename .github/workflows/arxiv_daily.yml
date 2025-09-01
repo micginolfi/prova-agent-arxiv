@@ -1,0 +1,55 @@
+name: arXiv → Discord (open, daily)
+
+on:
+  schedule:
+    - cron: "0 6 * * *"   # 06:00 UTC ≈ 08:00 Italia (CEST)
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Cache del modello GGUF (per evitare di riscaricarlo ogni giorno)
+      - name: Cache GGUF model
+        id: cache-gguf
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: gguf-qwen2.5-1.5b-q4_0
+
+      - name: Prepare model dir
+        run: mkdir -p models
+
+      - name: Download open model (if not cached)
+        if: steps.cache-gguf.outputs.cache-hit != 'true'
+        run: |
+          # Qwen2.5 1.5B Instruct quantizzato Q4_0 (piccolo, CPU-friendly)
+          curl -L -o models/Qwen2.5-1.5B-Instruct-Q4_0.gguf \
+            https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_0.gguf
+
+      - name: Build llama.cpp
+        run: |
+          git clone --depth=1 https://github.com/ggerganov/llama.cpp
+          cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build llama.cpp/build -j
+          echo "LLAMA_BIN=$(pwd)/llama.cpp/build/bin/llama-cli" >> $GITHUB_ENV
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run daily script
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          LLM_MODEL_PATH: models/Qwen2.5-1.5B-Instruct-Q4_0.gguf
+          LLAMA_BIN: ${{ env.LLAMA_BIN }}
+          SEED: "13"
+          MAX_TOKENS: "1400"
+          CTX: "4096"
+        run: python arxiv2discord_open.py
