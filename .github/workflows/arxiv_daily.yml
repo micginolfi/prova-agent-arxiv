@@ -61,9 +61,9 @@ jobs:
       - name: Run daily script
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          LLAMA_BIN: ${{ env.LLAMA_BIN }}   # <-- PASSIAMO l'eseguibile al tuo script
-          LLM_MODEL_PATH: models/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf  # <-- PASSIAMO il modello
+          LLAMA_BIN: ${{ env.LLAMA_BIN }}
+          LLM_MODEL_PATH: models/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf
           SEED: "13"
-          MAX_TOKENS: "1200"
-          CTX: "4096"
+          MAX_TOKENS: "900"     # output più breve (Discord-friendly)
+          CTX: "8192"           # context più ampio (ma non esageriamo)
         run: python arxiv2discord_open.py
