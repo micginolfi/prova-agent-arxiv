@@ -5,7 +5,7 @@ from bs4 import BeautifulSoup
 ARXIV_NEW_URL = "https://arxiv.org/list/astro-ph/new"
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK", "")
 LLAMA_BIN = os.getenv("LLAMA_BIN", "./llama.cpp/build/bin/llama-cli")  # path al binario llama.cpp
-LLM_MODEL_PATH = os.getenv("LLM_MODEL_PATH", "models/qwen2.5-1.5b-instruct-q4_k_m.gguf")
+LLM_MODEL_PATH = os.getenv("LLM_MODEL_PATH", "models/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf")
 SEED = int(os.getenv("SEED", "42"))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "1200"))  # output max
 CTX = int(os.getenv("CTX", "4096"))
