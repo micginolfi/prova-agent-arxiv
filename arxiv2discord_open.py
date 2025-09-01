@@ -99,55 +99,83 @@ def parse_arxiv(html: str):
     return items
 
 def filter_candidates(items):
+    """Seleziona paper su galaxies/AGN e separa 'others'."""
     selected, others = [], []
     for it in items:
-        cat_ok = (it["primary_cat"] in CATEGORIES_OK) or ("astro-ph" in it["primary_cat"])
-        text = f"{it['title']} || {it['abstract']}"
+        cat_ok = (it.get("primary_cat","astro-ph") in CATEGORIES_OK) or ("astro-ph" in it.get("primary_cat",""))
+        text = f"{it.get('title','')} || {it.get('abstract','')}"
         kw_ok = bool(KEYWORDS_RE.search(text))
         (selected if (cat_ok and kw_ok) else others).append(it)
-    return selected[:40], others[:40]
 
-def build_block(selected, others):
-    def line(p):
-        s = f"{p['title']} | {p['authors']} | {p['arxiv_id']} | {p['link']} | {p['primary_cat']} | {p['abstract']}"
-        return s.replace("\n"," ").strip()
-    return "\n".join([line(p) for p in (selected + others)])
+    # Limita già qui (meno roba per l’LLM)
+    # tipicamente bastano 12 paper “selected” e 8 “others”
+    return selected[:12], others[:8]
+
+
+def _truncate(s: str, max_chars: int) -> str:
+    s = (s or "").strip()
+    if len(s) <= max_chars:
+        return s
+    return s[:max_chars].rsplit(" ", 1)[0] + " …"
+
+def build_block(selected, others, abstract_max=800, budget_chars=16000):
+    """
+    Costruisce il blocco CANDIDATES rispettando un budget in caratteri.
+    - tronca ogni abstract
+    - si ferma quando supera il budget
+    """
+    lines = []
+    used = 0
+    def add_line(p):
+        nonlocal used
+        title   = _truncate(p.get("title",""), 300)
+        authors = _truncate(p.get("authors","").replace("\n"," "), 300)
+        abstr   = _truncate(p.get("abstract","").replace("\n"," "), abstract_max)
+        line = f"{title} | {authors} | {p.get('arxiv_id','')} | {p.get('link','')} | {p.get('primary_cat','astro-ph')} | {abstr}"
+        if used + len(line) + 1 > budget_chars:
+            return False
+        lines.append(line)
+        used += len(line) + 1
+        return True
+
+    for p in selected:
+        if not add_line(p): break
+    for p in others:
+        if not add_line(p): break
+
+    block = "\n".join(lines)
+    print(f"PROMPT SIZE (chars): {len(block)}  ~tokens≈{len(block)//4}")
+    return block
 
 def run_llama(system_prompt: str, user_prompt: str) -> str:
-    """
-    Esegue llama.cpp in CLI, passando system+user come prompt unico.
-    Richiede che LLM_MODEL_PATH punti a un .gguf (open) e LLAMA_BIN sia compilato.
-    """
-    if not shutil.which(LLAMA_BIN):
-        raise RuntimeError(f"llama.cpp binary not found at {LLAMA_BIN}")
-    prompt = f"<<SYS>>\n{system_prompt}\n<</SYS>>\n\n{user_prompt}"
-    with tempfile.NamedTemporaryFile("w+", delete=False) as f:
-        f.write(prompt)
-        tmp = f.name
-    try:
-        # llama-cli parametri base CPU
-        cmd = [
-            LLAMA_BIN,
-            "-m", LLM_MODEL_PATH,
-            "-p", prompt,
-            "-n", str(MAX_TOKENS),
-            "-s", str(SEED),
-            "-c", str(CTX),
-            "--seed", str(SEED),
-        ]
-        try:
-            out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True, timeout=1800)
-            # opzionale: stampa i primi caratteri per conferma
-            print("LLAMA raw output (first 80 chars):", out[:80].replace("\n"," "))
-            return out.strip()
-        except subprocess.CalledProcessError as e:
-            print("LLAMA failed, output was:\n", e.output)
-            raise
+    import shutil, subprocess, os
+    if not shutil.which(os.getenv("LLAMA_BIN", "")):
+        raise RuntimeError(f"llama.cpp binary not found at {os.getenv('LLAMA_BIN','')}")
+    LLAMA_BIN = os.getenv("LLAMA_BIN")
+    LLM_MODEL_PATH = os.getenv("LLM_MODEL_PATH")
+    MAX_TOKENS = int(os.getenv("MAX_TOKENS", "900"))
+    CTX = int(os.getenv("CTX", "8192"))
+    SEED = int(os.getenv("SEED", "13"))
 
+    cmd = [
+        LLAMA_BIN,
+        "-m", LLM_MODEL_PATH,
+        "--system-prompt", system_prompt,   # <<--- usa il system nativo
+        "-p", user_prompt,                  # user nel -p
+        "-n", str(MAX_TOKENS),
+        "-c", str(CTX),
+        "--seed", str(SEED),
+        "--no-warmup",
+    ]
+    try:
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True, timeout=1800)
+        # opzionale: log breve
+        print("LLAMA raw (first 120):", out[:120].replace("\n"," "))
         return out.strip()
-    finally:
-        try: os.unlink(tmp)
-        except: pass
+    except subprocess.CalledProcessError as e:
+        print("LLAMA failed, output was:\n", e.output)
+        raise
+
 
 def post_discord(text: str):
     if not DISCORD_WEBHOOK:
