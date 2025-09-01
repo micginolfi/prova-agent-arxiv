@@ -118,7 +118,7 @@ def _truncate(s: str, max_chars: int) -> str:
         return s
     return s[:max_chars].rsplit(" ", 1)[0] + " …"
 
-def build_block(selected, others, abstract_max=800, budget_chars=16000):
+def build_block(selected, others, abstract_max=600, budget_chars=12000):
     """
     Costruisce il blocco CANDIDATES rispettando un budget in caratteri.
     - tronca ogni abstract
@@ -167,24 +167,38 @@ def run_llama(system_prompt: str, user_prompt: str) -> str:
         "-c", str(CTX),
         "--seed", str(SEED),
         "--no-warmup",
-        "--log-disable",
         "--no-display-prompt",
-        "--simple-io",        # <<< solo la generazione su stdout
+        "--log-disable",
+        "--simple-io",
+        "-no-cnv",              # <<< IMPORTANTISSIMO: niente chat template
         "--no-color",
     ]
 
-    out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True, timeout=1800)
-    return out.strip()
+    # Catturiamo *entrambi* i flussi per diagnostica nei log di Actions
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    if res.returncode != 0:
+        print("LLAMA STDERR (first 500):", (res.stderr or "")[:500].replace("\n"," "))
+        print("LLAMA STDOUT (first 200):", (res.stdout or "")[:200].replace("\n"," "))
+        raise RuntimeError(f"llama-cli exited with code {res.returncode}")
+    out = (res.stdout or "").strip()
+    if not out:
+        print("LLAMA produced empty stdout.")
+        raise RuntimeError("empty output")
+    # opzionale: piccolo peek nei log
+    print("LLAMA OUT (first 120):", out[:120].replace("\n"," "))
+    return out
+
 
 def clean_model_output(txt: str) -> str:
     start = txt.find("===== PAPER =====")
     if start != -1:
         txt = txt[start:]
-    # taglia eventuali residui di prompt
-    cutter = "STRICT FORMAT:"
-    if cutter in txt:
-        txt = txt.split(cutter, 1)[0].rstrip()
+    # taglia eventuale eco del prompt
+    for cutter in ("STRICT FORMAT:", "At the end, produce:"):
+        if cutter in txt:
+            txt = txt.split(cutter, 1)[0].rstrip()
     return txt.strip()
+
 
 def fallback_list(selected):
     lines = ["Open LLM unavailable. Fallback list:\n"]
