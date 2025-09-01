@@ -2,7 +2,7 @@ import os, re, textwrap, subprocess, tempfile, requests, shutil
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
 
-ARXIV_NEW_URL = "https://arxiv.org/list/astro-ph/new"
+ARXIV_NEW_URL = "https://arxiv.org/list/astro-ph.GA/new"
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK", "")
 LLAMA_BIN = os.getenv("LLAMA_BIN", "./llama.cpp/build/bin/llama-cli")  # path al binario llama.cpp
 LLM_MODEL_PATH = os.getenv("LLM_MODEL_PATH", "models/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf")
@@ -29,36 +29,33 @@ SYSTEM_PROMPT = (
     "When uncertain, say so briefly."
 )
 
-USER_TEMPLATE = """Task: Search arXiv for new submissions and replacements from the last 24h at:
-https://arxiv.org/list/astro-ph/new
+USER_TEMPLATE = """You read today's page:
+https://arxiv.org/list/astro-ph.GA/new
 
-Filter for galaxies/AGN topics (metallicities, AGN outflows/feedback, photoionization/emission-line physics, SMBH/host).
-
-Input (machine-compiled):
+Input:
 DATE_UTC: {date_utc}
 WINDOW_H: 24
 CANDIDATES (title | authors | arxiv_id | link | primary_cat | abstract):
 {paper_block}
 
-Output requirements:
-- English only.
-- Plain ASCII, explicit http links, email/RTF-friendly.
-- For EACH MATCHING PAPER produce a block:
+Write in English, ASCII-only. For EACH relevant paper in CANDIDATES, output EXACTLY one block:
 
 ===== PAPER =====
 Title: <title>
 Authors: <authors>
-Link: <http link to arXiv>
-Summary (5–8 sentences): <methods, results, conclusions>
-Relevance: <impact for galaxy evolution; AGN–galaxy coevolution; emission-line modeling>
+Link: <http://arxiv link>
+Summary (3–5 sentences): <methods, results, conclusions in technical style>
+Relevance: <1–2 sentences on implications for galaxy evolution / AGN–galaxy coevolution / emission-line modeling>
 
-At the end, produce:
+After listing ALL relevant papers, output EXACTLY one final block:
 
 ===== DAILY SYNTHESIS =====
-<One paragraph (5–8 sentences) summarizing trends across the day, including noteworthy results from non-selected candidates that may matter for the ANDES project.>
+<5–7 sentences on today's trends across all GA submissions, including notable points from non-selected items, with any potential implications for ANDES.>
 
-STRICT FORMAT: use exactly the headers shown (===== PAPER =====, Title:, Authors:, Link:, Summary:, Relevance:, ===== DAILY SYNTHESIS =====). No extra sections, no markdown.
+STRICT FORMAT: use only the sections above, no duplicates, no extra headers. End your message with the exact token:
+<<END>>
 """.strip()
+
 
 def fetch_html():
     r = requests.get(ARXIV_NEW_URL, timeout=30, headers={"User-Agent":"Mozilla/5.0"})
@@ -109,7 +106,7 @@ def filter_candidates(items):
 
     # Limita già qui (meno roba per l’LLM)
     # tipicamente bastano 10 paper “selected” e 5 “others”
-    return selected[:10], others[:5]
+    return selected[:8], others[:4]
 
 
 def _truncate(s: str, max_chars: int) -> str:
@@ -158,47 +155,59 @@ def run_llama(system_prompt: str, user_prompt: str) -> str:
     if not shutil.which(LLAMA_BIN):
         raise RuntimeError(f"llama.cpp binary not found at {LLAMA_BIN}")
 
-    # Prompt "grezzo": niente chat-template, niente system separato
     full_prompt = f"<<SYS>>\n{system_prompt}\n<</SYS>>\n\n{user_prompt}"
 
     cmd = [
-        LLAMA_BIN,
-        "-m", LLM_MODEL_PATH,
-        "--prompt", full_prompt,
+        LLAMA_BIN, "-m", LLM_MODEL_PATH,
+        "--prompt", full_prompt,     # prompt “grezzo”
         "-n", str(MAX_TOKENS),
         "-c", str(CTX),
         "--seed", str(SEED),
         "--simple-io",
         "--no-display-prompt",
-        "-no-cnv",
-        "--chat-template", "",   # <--- forzato vuoto
+        "-no-cnv",                   # niente chat template
         "--temp", "0.2",
+        "--stop", "<<END>>",         # <<< ferma qui la generazione
     ]
 
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
     if res.returncode != 0:
-        print("LLAMA STDERR (last 400):", (res.stderr or "")[-400:].replace("\n"," "))
-        print("LLAMA STDOUT (first 200):", (res.stdout or "")[:200].replace("\n"," "))
+        print("LLAMA STDERR:", (res.stderr or "")[-500:].replace("\n"," "))
+        print("LLAMA STDOUT:", (res.stdout or "")[:200].replace("\n"," "))
         raise RuntimeError(f"llama-cli exited with code {res.returncode}")
-
     out = (res.stdout or "").strip()
     if not out:
-        print("LLAMA EMPTY OUT - STDERR(last 400):", (res.stderr or "")[-400:].replace("\n"," "))
-        print("LLAMA EMPTY OUT - STDOUT(first 200):", (res.stdout or "")[:200].replace("\n"," "))
+        print("LLAMA produced empty stdout.")
         raise RuntimeError("empty output")
-    print("LLAMA OUT (first 120):", out[:120].replace("\n"," "))
     return out
 
-
 def clean_model_output(txt: str) -> str:
+    if "<<END>>" in txt:
+        txt = txt.split("<<END>>", 1)[0]
+
+    # tieni solo dal primo PAPER in poi
     start = txt.find("===== PAPER =====")
     if start != -1:
         txt = txt[start:]
-    # taglia eventuale eco del prompt
-    for cutter in ("STRICT FORMAT:", "At the end, produce:"):
+
+    # se il modello ripete PAPER dopo la sintesi, tronca al termine della prima SYNTHESIS
+    syn = "===== DAILY SYNTHESIS ====="
+    idx = txt.find(syn)
+    if idx != -1:
+        # prendi dalla SYNTHESIS fino a fine del paragrafo (o fine file)
+        tail = txt[idx:]
+        # se per caso aggiunge di nuovo "===== PAPER =====", taglia lì
+        nxt = tail.find("===== PAPER =====")
+        if nxt != -1:
+            tail = tail[:nxt]
+        txt = txt[:idx] + tail
+
+    # rimuovi righe fantasma dell’istruzione
+    for cutter in ("STRICT FORMAT:", "After listing ALL", "Input:", "CANDIDATES"):
         if cutter in txt:
-            txt = txt.split(cutter, 1)[0].rstrip()
+            txt = txt.replace(cutter, "")
     return txt.strip()
+
 
 
 def fallback_list(selected):
@@ -212,8 +221,15 @@ def post_discord(text: str):
     if not DISCORD_WEBHOOK:
         print("[WARN] DISCORD_WEBHOOK not set.")
         return
-    for chunk in textwrap.wrap(text, 1800, replace_whitespace=False, drop_whitespace=False):
-        requests.post(DISCORD_WEBHOOK, json={"content": chunk}, timeout=20)
+    chunks = [c for c in textwrap.wrap(text, 1800, replace_whitespace=False, drop_whitespace=False) if c.strip()]
+    if not chunks:
+        print("[WARN] Nothing to send to Discord (empty content).")
+        return
+    for chunk in chunks:
+        r = requests.post(DISCORD_WEBHOOK, json={"content": chunk, "flags": 4096}, timeout=20)  # 4096 = SUPPRESS_EMBEDS
+        if not r.ok:
+            print(f"[ERR] Discord POST {r.status_code}: {r.text[:200]}")
+
 
 def main():
     html = fetch_html()
