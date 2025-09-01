@@ -17,7 +17,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: models
-          key: gguf-qwen2.5-1.5b-q4_0
+          key: gguf-qwen2.5-15b-q4km
 
       - name: Prepare model dir
         run: mkdir -p models
