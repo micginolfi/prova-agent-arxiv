@@ -158,41 +158,37 @@ def run_llama(system_prompt: str, user_prompt: str) -> str:
     if not shutil.which(LLAMA_BIN):
         raise RuntimeError(f"llama.cpp binary not found at {LLAMA_BIN}")
 
-    # Lista comandi AGGIORNATA
+    # Prompt "grezzo": niente chat-template, niente system separato
+    full_prompt = f"<<SYS>>\n{system_prompt}\n<</SYS>>\n\n{user_prompt}"
+
     cmd = [
         LLAMA_BIN,
         "-m", LLM_MODEL_PATH,
-        "--chat-template", "qwen2",  # <-- FORZA IL TEMPLATE CORRETTO PER QWEN2
-        "--system-prompt", system_prompt,
-        "-p", user_prompt,
+        "--prompt", full_prompt,
         "-n", str(MAX_TOKENS),
         "-c", str(CTX),
         "--seed", str(SEED),
-        "--temp", "0.2",          # Aggiungi un po' di creatività controllata
-        "--no-display-prompt",    # Questo è obsoleto, ma alcune versioni lo tollerano.
-                                  # Rimuovilo se causa problemi. --log-disable è più moderno.
+        "--simple-io",
+        "--no-display-prompt",
+        "-no-cnv",
+        "--chat-template", "",   # <--- forzato vuoto
+        "--temp", "0.2",
     ]
 
-    # Catturiamo *entrambi* i flussi per diagnostica nei log di Actions
-    print(f"Executing command: {' '.join(cmd)}") # Aggiungi questo per vedere il comando esatto
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
-
     if res.returncode != 0:
-        # Se c'è un errore, ora vedremo molto di più grazie alla rimozione di --log-disable
-        print("LLAMA STDERR:", res.stderr)
-        print("LLAMA STDOUT:", res.stdout)
+        print("LLAMA STDERR (last 400):", (res.stderr or "")[-400:].replace("\n"," "))
+        print("LLAMA STDOUT (first 200):", (res.stdout or "")[:200].replace("\n"," "))
         raise RuntimeError(f"llama-cli exited with code {res.returncode}")
 
     out = (res.stdout or "").strip()
     if not out:
-        print("LLAMA produced empty stdout.")
-        # Anche con output vuoto, stampiamo stderr per eventuali warning
-        print("LLAMA STDERR (in case of warnings):", res.stderr)
+        print("LLAMA EMPTY OUT - STDERR(last 400):", (res.stderr or "")[-400:].replace("\n"," "))
+        print("LLAMA EMPTY OUT - STDOUT(first 200):", (res.stdout or "")[:200].replace("\n"," "))
         raise RuntimeError("empty output")
-        
-    # opzionale: piccolo peek nei log
     print("LLAMA OUT (first 120):", out[:120].replace("\n"," "))
     return out
+
 
 def clean_model_output(txt: str) -> str:
     start = txt.find("===== PAPER =====")
