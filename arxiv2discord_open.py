@@ -108,8 +108,8 @@ def filter_candidates(items):
         (selected if (cat_ok and kw_ok) else others).append(it)
 
     # Limita già qui (meno roba per l’LLM)
-    # tipicamente bastano 12 paper “selected” e 8 “others”
-    return selected[:12], others[:8]
+    # tipicamente bastano 10 paper “selected” e 5 “others”
+    return selected[:10], others[:5]
 
 
 def _truncate(s: str, max_chars: int) -> str:
@@ -149,33 +149,41 @@ def build_block(selected, others, abstract_max=800, budget_chars=16000):
 
 def run_llama(system_prompt: str, user_prompt: str) -> str:
     import shutil, subprocess, os
-    if not shutil.which(os.getenv("LLAMA_BIN", "")):
-        raise RuntimeError(f"llama.cpp binary not found at {os.getenv('LLAMA_BIN','')}")
     LLAMA_BIN = os.getenv("LLAMA_BIN")
     LLM_MODEL_PATH = os.getenv("LLM_MODEL_PATH")
     MAX_TOKENS = int(os.getenv("MAX_TOKENS", "900"))
     CTX = int(os.getenv("CTX", "8192"))
     SEED = int(os.getenv("SEED", "13"))
 
+    if not shutil.which(LLAMA_BIN):
+        raise RuntimeError(f"llama.cpp binary not found at {LLAMA_BIN}")
+
     cmd = [
         LLAMA_BIN,
         "-m", LLM_MODEL_PATH,
-        "--system-prompt", system_prompt,   # <<--- usa il system nativo
-        "-p", user_prompt,                  # user nel -p
+        "--system-prompt", system_prompt,   # usa il canale 'system'
+        "-p", user_prompt,                  # prompt utente
         "-n", str(MAX_TOKENS),
         "-c", str(CTX),
         "--seed", str(SEED),
         "--no-warmup",
+        "--log-disable",                    # <<< silenzia i log
+        "--no-display-prompt",              # non ristampare il prompt
     ]
-    try:
-        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True, timeout=1800)
-        # opzionale: log breve
-        print("LLAMA raw (first 120):", out[:120].replace("\n"," "))
-        return out.strip()
-    except subprocess.CalledProcessError as e:
-        print("LLAMA failed, output was:\n", e.output)
-        raise
 
+    # NB: NON misceliamo stderr->stdout: i log restano fuori dall'output
+    out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True, timeout=1800)
+    return out.strip()
+
+def clean_model_output(txt: str) -> str:
+    start = txt.find("===== PAPER =====")
+    if start != -1:
+        txt = txt[start:]
+    # opzionale: se vuoi assicurarti che termini con la sezione finale
+    # end = txt.rfind("===== DAILY SYNTHESIS =====")
+    # if end != -1:
+    #     txt = txt[:]
+    return txt.strip()
 
 def post_discord(text: str):
     if not DISCORD_WEBHOOK:
@@ -207,6 +215,8 @@ def main():
         for it in selected:
             lines.append(f"- {it['title']} ({it['link']})")
         txt = "\n".join(lines) if lines else f"Error: {e}"
+    
+    txt = clean_model_output(txt)
     post_discord(txt)
     print("Done.")
 
