@@ -151,7 +151,7 @@ def run_llama(system_prompt: str, user_prompt: str) -> str:
     import shutil, subprocess, os
     LLAMA_BIN = os.getenv("LLAMA_BIN")
     LLM_MODEL_PATH = os.getenv("LLM_MODEL_PATH")
-    MAX_TOKENS = int(os.getenv("MAX_TOKENS", "900"))
+    MAX_TOKENS = int(os.getenv("MAX_TOKENS", "1200"))
     CTX = int(os.getenv("CTX", "8192"))
     SEED = int(os.getenv("SEED", "13"))
 
@@ -161,17 +161,18 @@ def run_llama(system_prompt: str, user_prompt: str) -> str:
     cmd = [
         LLAMA_BIN,
         "-m", LLM_MODEL_PATH,
-        "--system-prompt", system_prompt,   # usa il canale 'system'
-        "-p", user_prompt,                  # prompt utente
+        "--system-prompt", system_prompt,
+        "-p", user_prompt,
         "-n", str(MAX_TOKENS),
         "-c", str(CTX),
         "--seed", str(SEED),
         "--no-warmup",
-        "--log-disable",                    # <<< silenzia i log
-        "--no-display-prompt",              # non ristampare il prompt
+        "--log-disable",
+        "--no-display-prompt",
+        "--simple-io",        # <<< solo la generazione su stdout
+        "--no-color",
     ]
 
-    # NB: NON misceliamo stderr->stdout: i log restano fuori dall'output
     out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True, timeout=1800)
     return out.strip()
 
@@ -179,11 +180,18 @@ def clean_model_output(txt: str) -> str:
     start = txt.find("===== PAPER =====")
     if start != -1:
         txt = txt[start:]
-    # opzionale: se vuoi assicurarti che termini con la sezione finale
-    # end = txt.rfind("===== DAILY SYNTHESIS =====")
-    # if end != -1:
-    #     txt = txt[:]
+    # taglia eventuali residui di prompt
+    cutter = "STRICT FORMAT:"
+    if cutter in txt:
+        txt = txt.split(cutter, 1)[0].rstrip()
     return txt.strip()
+
+def fallback_list(selected):
+    lines = ["Open LLM unavailable. Fallback list:\n"]
+    for it in selected:
+        lines.append(f"- {it['title']} ({it['link']})")
+    return "\n".join(lines)
+
 
 def post_discord(text: str):
     if not DISCORD_WEBHOOK:
@@ -210,6 +218,7 @@ def main():
         print("Selected:", len(selected), "Others:", len(others))
 
         txt = run_llama(SYSTEM_PROMPT, user)
+        
     except Exception as e:
         lines = ["Open LLM unavailable. Fallback list:\n"]
         for it in selected:
@@ -217,6 +226,9 @@ def main():
         txt = "\n".join(lines) if lines else f"Error: {e}"
     
     txt = clean_model_output(txt)
+    if not txt or "===== PAPER =====" not in txt:
+        txt = fallback_list(selected)
+    
     post_discord(txt)
     print("Done.")
 
