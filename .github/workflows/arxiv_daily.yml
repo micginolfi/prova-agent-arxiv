@@ -50,7 +50,6 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/ggerganov/llama.cpp
           cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release \
-            -DLLAMA_JINJA_SUPPORT=ON \  # <-- AGGIUNGI QUESTA RIGA
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build llama.cpp/build -j
           echo "LLAMA_BIN=$(pwd)/llama.cpp/build/bin/llama-cli" >> $GITHUB_ENV
