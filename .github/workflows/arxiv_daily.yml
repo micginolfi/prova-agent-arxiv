@@ -47,7 +47,7 @@ jobs:
       - name: Run daily script
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          LLM_MODEL_PATH: models/Qwen2.5-1.5B-Instruct-Q4_0.gguf
+          LLM_MODEL_PATH: models/qwen2.5-1.5b-instruct-q4_0.gguf
           LLAMA_BIN: ${{ env.LLAMA_BIN }}
           SEED: "13"
           MAX_TOKENS: "1400"
