@@ -167,7 +167,7 @@ def run_llama(system_prompt: str, user_prompt: str) -> str:
         "--no-display-prompt",
         "-no-cnv",                   # niente chat template
         "--temp", "0.2",
-        "--stop", "<<END>>",         # <<< ferma qui la generazione
+        "--override-stop", "<<END>>",
     ]
 
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
