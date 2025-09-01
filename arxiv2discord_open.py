@@ -135,7 +135,15 @@ def run_llama(system_prompt: str, user_prompt: str) -> str:
             "-c", str(CTX),
             "--seed", str(SEED),
         ]
-        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True, timeout=1800)
+        try:
+            out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True, timeout=1800)
+            # opzionale: stampa i primi caratteri per conferma
+            print("LLAMA raw output (first 80 chars):", out[:80].replace("\n"," "))
+            return out.strip()
+        except subprocess.CalledProcessError as e:
+            print("LLAMA failed, output was:\n", e.output)
+            raise
+
         return out.strip()
     finally:
         try: os.unlink(tmp)
@@ -159,6 +167,12 @@ def main():
     block = build_block(selected, others)
     user = USER_TEMPLATE.format(date_utc=date_utc, paper_block=block)
     try:
+
+        import os, shutil
+        print("DBG LLAMA_BIN:", os.getenv("LLAMA_BIN"), "exists?", os.path.exists(os.getenv("LLAMA_BIN","")))
+        print("DBG LLM_MODEL_PATH:", os.getenv("LLM_MODEL_PATH"), "exists?", os.path.exists(os.getenv("LLM_MODEL_PATH","")))
+        print("Selected:", len(selected), "Others:", len(others))
+
         txt = run_llama(SYSTEM_PROMPT, user)
     except Exception as e:
         lines = ["Open LLM unavailable. Fallback list:\n"]
