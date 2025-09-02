@@ -105,8 +105,8 @@ def filter_candidates(items):
         if kw_ok:
             candidates.append(it)
     
-    # Possiamo prenderne di più dato che sono solo GA
-    return candidates[:10]
+    # Limita a massimo 5 paper per velocità
+    return candidates[:5]
 
 def _truncate(s: str, max_chars: int) -> str:
     s = (s or "").strip()
@@ -120,7 +120,7 @@ def build_paper_block(candidates):
     for i, p in enumerate(candidates, 1):
         title = _truncate(p.get("title", ""), 150)
         first_author = p.get("first_author", "")
-        abstract = _truncate(p.get("abstract", ""), 500)
+        abstract = _truncate(p.get("abstract", ""), 300)  # Abstract più corti
         link = p.get("link", "")
         
         lines.append(f"{i}. Title: {title}")
@@ -146,20 +146,23 @@ def run_llama(system_prompt: str, user_prompt: str) -> str:
 
     cmd = [
         LLAMA_BIN, "-m", LLM_MODEL_PATH,
-        "--prompt", full_prompt,
+        "-p", full_prompt,  # Corretto: -p non --prompt
         "-n", str(MAX_TOKENS),
         "-c", str(CTX),
         "--seed", str(SEED),
-        "--temp", "0.3",  # Temperatura leggermente più alta per creatività
+        "--temp", "0.3",  
         "--repeat-penalty", "1.1",
         "--no-display-prompt",
-        "-ngl", "0",  # Nessuna GPU acceleration (CPU only)
+        "-t", str(os.cpu_count() or 4),  # Usa tutti i core disponibili
+        "-ngl", "0",  # CPU only
+        "--mlock",    # Lock model in memory
+        "--no-mmap",  # Disabilita memory mapping per velocità
     ]
 
     print(f"Running: {LLAMA_BIN} with model {os.path.basename(LLM_MODEL_PATH)}")
     
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)  # 15 minuti generoso
         if result.returncode != 0:
             print(f"STDERR: {result.stderr[-300:]}")
             print(f"STDOUT preview: {result.stdout[:200]}")
@@ -174,7 +177,7 @@ def run_llama(system_prompt: str, user_prompt: str) -> str:
         return output.strip()
         
     except subprocess.TimeoutExpired:
-        raise RuntimeError("llama-cli timed out after 300 seconds")
+        raise RuntimeError("llama-cli timed out after 600 seconds")
 
 def clean_output(text: str) -> str:
     """Pulisce l'output del modello"""
