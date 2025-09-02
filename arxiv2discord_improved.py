@@ -10,8 +10,7 @@ SEED = int(os.getenv("SEED", "42"))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "1200"))
 CTX = int(os.getenv("CTX", "8192"))
 
-# Filtri: categorie e parole chiave (case-insensitive)
-CATEGORIES_OK = {"astro-ph.GA", "astro-ph.CO", "astro-ph.HE", "astro-ph"}
+# Filtri: solo parole chiave (astro-ph.GA già nel URL)
 KEYWORDS = [
     r"\bAGN\b", r"active galactic nucleus", r"outflow", r"feedback",
     r"photoionization", r"ionization parameter", r"cloudy", r"mappings",
@@ -96,21 +95,18 @@ def parse_arxiv(html: str):
     return items
 
 def filter_candidates(items):
-    """Pre-filtra candidati rilevanti"""
+    """Pre-filtra candidati rilevanti (solo astro-ph.GA)"""
     candidates = []
     for it in items:
-        cat_ok = (it.get("primary_cat","astro-ph") in CATEGORIES_OK) or ("astro-ph" in it.get("primary_cat",""))
-        if not cat_ok:
-            continue
-            
+        # Solo astro-ph.GA - già filtrato dall'URL!
         text = f"{it.get('title','')} {it.get('abstract','')}"
         kw_ok = bool(KEYWORDS_RE.search(text))
         
         if kw_ok:
             candidates.append(it)
     
-    # Limita a massimo 8 paper per non saturare il context
-    return candidates[:8]
+    # Possiamo prenderne di più dato che sono solo GA
+    return candidates[:10]
 
 def _truncate(s: str, max_chars: int) -> str:
     s = (s or "").strip()
