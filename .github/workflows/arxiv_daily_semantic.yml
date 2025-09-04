@@ -1,4 +1,4 @@
-name: arXiv → Discord (Qwen2.5-7B, daily)
+name: arXiv → Discord (Qwen2.5-7B, daily) semantic pre-selection
 
 on:
   schedule:
