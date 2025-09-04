@@ -72,10 +72,10 @@ jobs:
 
       - name: Run daily script
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_prova }}
           LLAMA_BIN: ${{ env.LLAMA_BIN }}
           LLM_MODEL_PATH: models/Qwen2.5-7B-Instruct-Q4_K_M.gguf
           SEED: "13"
           MAX_TOKENS: "1500"
           CTX: "16384"
-        run: python arxiv2discord_improved.py
+        run: python arXiv2discord_semantic_test.py
