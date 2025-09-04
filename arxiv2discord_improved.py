@@ -12,12 +12,47 @@ CTX = int(os.getenv("CTX", "8192"))
 
 # Filtri: solo parole chiave (astro-ph.GA già nel URL)
 KEYWORDS = [
+    # AGN & Black Holes
     r"\bAGN\b", r"active galactic nucleus", r"outflow", r"feedback",
-    r"photoionization", r"ionization parameter", r"cloudy", r"mappings",
-    r"emission[- ]?line", r"\bBPT\b", r"metallicit", r"oxygen abundance",
     r"supermassive black hole", r"\bSMBH\b", r"black hole mass",
-    r"co[- ]?evolution", r"narrow[- ]line region", r"\bNLR\b",
-    r"broad[- ]line region", r"\bBLR\b", r"galax(y|ies)", r"quasar", r"seyfert",
+    r"quasar", r"seyfert", r"blazar", r"radio galaxy",
+    r"accretion disk", r"eddington", r"radiatively efficient",
+    r"jet", r"relativistic", r"radio loud", r"radio quiet",
+    
+    # Emission Lines & Diagnostics  
+    r"emission[- ]?line", r"\bBPT\b", r"photoionization", 
+    r"ionization parameter", r"cloudy", r"mappings",
+    r"narrow[- ]line region", r"\bNLR\b", r"broad[- ]line region", r"\bBLR\b",
+    r"balmer", r"forbidden line", r"recombination", r"collisional",
+    r"line ratio", r"diagnostic", r"excitation",
+    
+    # Chemical Evolution
+    r"metallicit", r"oxygen abundance", r"nitrogen abundance",
+    r"chemical evolution", r"enrichment", r"alpha enhancement",
+    r"stellar nucleosynthesis", r"IMF", r"yield",
+    r"mass[- ]metallicity",
+    
+    # Galaxy Evolution & Morphology
+    r"galax(y|ies)", r"co[- ]?evolution", r"merger", r"interaction",
+    r"morphology", r"bulge", r"disk", r"bar", r"spiral arm",
+    r"elliptical", r"lenticular", r"irregular",
+    r"stellar mass", r"halo mass", r"dark matter halo",
+    
+    # Star Formation & Feedback
+    r"star formation", r"SFR", r"specific star formation",
+    r"main sequence", r"starburst", r"quenching",
+    r"stellar feedback", r"supernova", r"stellar wind",
+    r"HII region", r"molecular cloud", r"ISM",
+    
+    # Environment & Large Scale
+    r"environment", r"cluster", r"group", r"field",
+    r"satellite", r"central", r"halo occupation",
+    r"cosmic web", r"filament", r"void",
+    
+    # Observations & Surveys
+    r"SDSS", r"GAIA", r"HST", r"JWST", r"ALMA",
+    r"integral field", r"IFU", r"spectroscopy",
+    r"photometry", r"imaging", r"redshift survey",
 ]
 KEYWORDS_RE = re.compile("|".join(KEYWORDS), re.IGNORECASE)
 
