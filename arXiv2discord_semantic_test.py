@@ -1,4 +1,4 @@
-# FILE: main.py
+# FILE: main.py (versione corretta)
 
 import os
 import re
@@ -23,7 +23,6 @@ MAX_TOKENS_SUMMARY = int(os.getenv("MAX_TOKENS_SUMMARY", "2048"))
 CTX_SIZE = int(os.getenv("CTX_SIZE", "8192"))
 
 # --- Interessi scientifici per la pre-selezione ---
-# Modifica questa stringa per affinare la selezione!
 SCIENTIFIC_INTERESTS = """
 My core research interests are:
 - Active Galactic Nuclei (AGN) physics, including accretion, feedback, and outflows.
@@ -90,12 +89,24 @@ def fetch_and_parse_arxiv():
     # Seleziona solo la sezione "New submissions"
     new_submissions_header = soup.find('h3', string=re.compile(r'New submissions'))
     if not new_submissions_header:
-        logging.warning("Could not find the 'New submissions' section.")
+        logging.warning("Could not find the 'New submissions' section header.")
         return []
         
-    dl_element = new_submissions_header.find_next_sibling("dl")
+    # --- INIZIO CODICE MODIFICATO ---
+    # Cerca il primo tag <dl> che segue l'intestazione, ignorando altri tag intermedi.
+    # Questo è molto più robusto di find_next_sibling().
+    dl_element = None
+    for sibling in new_submissions_header.find_next_siblings():
+        if sibling.name == 'dl':
+            dl_element = sibling
+            break
+        if sibling.name == 'h3':
+            # Se incontriamo il prossimo h3 (es. "Cross-lists"), ci fermiamo.
+            break
+    # --- FINE CODICE MODIFICATO ---
+
     if not dl_element:
-        logging.warning("Could not find the list of papers after the 'New submissions' header.")
+        logging.warning("Could not find the list of papers (<dl> tag) after the 'New submissions' header.")
         return []
 
     papers = []
@@ -128,7 +139,7 @@ def select_papers_with_llm(papers):
     """
     logging.info("2. Starting LLM pre-selection based on titles...")
     if len(papers) <= 5:
-        logging.info("Fewer than 5 papers found, selecting all of them.")
+        logging.info("Fewer than 6 papers found, selecting all of them.")
         return papers
 
     # Prepara la lista di titoli per il prompt
