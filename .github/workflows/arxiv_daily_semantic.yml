@@ -1,3 +1,5 @@
+# FILE: .github/workflows/arxiv_daily_semantic.yml
+
 name: arXiv → Discord (Qwen2.5-7B, daily) semantic pre-selection
 
 on:
@@ -9,73 +11,77 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: 1. Checkout repository
+        uses: actions/checkout@v4
 
       # ---- Cache del modello GGUF (7B) ----
-      - name: Cache GGUF model 7B
+      - name: 2. Cache GGUF model 7B
         id: cache-gguf
         uses: actions/cache@v4
         with:
           path: models
           key: gguf-qwen2.5-7b-q4_k_m
 
-      - name: Prepare model dir
+      - name: 3. Prepare model directory
         run: mkdir -p models
 
-      - name: Download Qwen2.5-7B model (if not cached)
+      - name: 4. Download Qwen2.5-7B model (if not cached)
         if: steps.cache-gguf.outputs.cache-hit != 'true'
         run: |
-          # Qwen2.5 7B Instruct GGUF - molto più capace del 1.5B
+          echo "Cache miss. Downloading Qwen2.5-7B model..."
           curl -fL -o models/Qwen2.5-7B-Instruct-Q4_K_M.gguf \
             https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf
+          echo "Model downloaded."
       
-      # deps per la build + ccache
-      - name: Install deps for build
+      # ---- Compilazione di llama.cpp con Caching ----
+      - name: 5. Build llama.cpp
         run: |
+          echo "::group::Build Dependencies & Caching"
           sudo apt-get update
           sudo apt-get install -y libcurl4-openssl-dev ccache
-      
-      # cache per la compilazione
-      - name: Restore ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccache
-          key: ccache-${{ runner.os }}-llama-7b
-      
-      # build llama.cpp usando ccache
-      - name: Build llama.cpp
-        env:
-          CC: "ccache gcc"
-          CXX: "ccache g++"
-        run: |
+          echo "::endgroup::"
+
+          echo "::group::Restore ccache from previous builds"
+          # Cache per la compilazione, separata dal modello
+          # actions/cache viene eseguito implicitamente qui dentro
+          # quindi non serve uno step separato
+          CCACHE_DIR=~/.cache/ccache
+          echo "CCACHE_DIR=$CCACHE_DIR" >> $GITHUB_ENV
+          echo "::endgroup::"
+
+          echo "::group::Cloning and Building llama.cpp"
           git clone --depth=1 https://github.com/ggerganov/llama.cpp
           cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build llama.cpp/build -j$(nproc)
           echo "LLAMA_BIN=$(pwd)/llama.cpp/build/bin/llama-cli" >> $GITHUB_ENV
+          echo "::endgroup::"
+      
+      - name: 6. Sanity checks
+        run: |
+          echo "::group::Sanity Checks"
+          echo "Verifying llama-cli..."
+          $LLAMA_BIN -h | head -n 8
+          echo "Verifying model file..."
+          ls -lh "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+          echo "::endgroup::"
 
-      # ---- Sanity checks ----
-      - name: Sanity check llama-cli
-        run: $LLAMA_BIN -h | head -n 8
-
-      - name: Verify model file
-        run: ls -lh "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
-
-      # ---- Python + script ----
-      - name: Setup Python
+      # ---- Esecuzione dello script Python ----
+      - name: 7. Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps
-        run: pip install -r requirements.txt
+      - name: 8. Install Python dependencies
+        run: pip install requests beautifulsoup4 lxml
 
-      - name: Run daily script
+      - name: 9. Run arXiv Scraper and LLM Analysis
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_prova }}
           LLAMA_BIN: ${{ env.LLAMA_BIN }}
           LLM_MODEL_PATH: models/Qwen2.5-7B-Instruct-Q4_K_M.gguf
-          SEED: "13"
-          MAX_TOKENS: "1500"
-          CTX: "16384"
+          # Parametri LLM resi più leggibili
+          SEED: "42"
+          MAX_TOKENS_SUMMARY: "2048" # Aumentato per sicurezza
+          CTX_SIZE: "8192" # 8k è più che sufficiente per 5 abstract
         run: python arXiv2discord_semantic_test.py
