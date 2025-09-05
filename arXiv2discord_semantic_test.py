@@ -1,401 +1,309 @@
-import os, re, textwrap, subprocess, requests
+# FILE: main.py
+
+import os
+import re
+import subprocess
+import requests
+import logging
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
 
-ARXIV_NEW_URL = "https://arxiv.org/list/astro-ph.GA/new"
-DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK", "")
+# --- Configurazione Globale ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# URL e Webhook
+ARXIV_URL = "https://arxiv.org/list/astro-ph.GA/new"
+DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
+
+# Configurazione LLM da variabili d'ambiente
 LLAMA_BIN = os.getenv("LLAMA_BIN", "./llama.cpp/build/bin/llama-cli")
-LLM_MODEL_PATH = os.getenv("LLM_MODEL_PATH", "models/Qwen2.5-3B-Instruct-Q4_K_M.gguf")
+LLM_MODEL_PATH = os.getenv("LLM_MODEL_PATH")
 SEED = int(os.getenv("SEED", "42"))
-MAX_TOKENS = int(os.getenv("MAX_TOKENS", "1500"))
-CTX = int(os.getenv("CTX", "12288"))
+MAX_TOKENS_SUMMARY = int(os.getenv("MAX_TOKENS_SUMMARY", "2048"))
+CTX_SIZE = int(os.getenv("CTX_SIZE", "8192"))
 
-# Keywords per fallback (se LLM selection fallisce)
-KEYWORDS = [
-    # AGN & Black Holes
-    r"\bAGN\b", r"active galactic nucleus", r"outflow", r"feedback",
-    r"supermassive black hole", r"\bSMBH\b", r"black hole mass",
-    r"quasar", r"seyfert", r"blazar", r"radio galaxy",
-    r"accretion disk", r"eddington", r"radiatively efficient",
-    r"jet", r"relativistic", r"radio loud", r"radio quiet",
-    
-    # Emission Lines & Diagnostics  
-    r"emission[- ]?line", r"\bBPT\b", r"photoionization", 
-    r"ionization parameter", r"cloudy", r"mappings",
-    r"narrow[- ]line region", r"\bNLR\b", r"broad[- ]line region", r"\bBLR\b",
-    r"balmer", r"forbidden line", r"recombination", r"collisional",
-    r"line ratio", r"diagnostic", r"excitation",
-    
-    # Chemical Evolution
-    r"metallicit", r"oxygen abundance", r"nitrogen abundance",
-    r"chemical evolution", r"enrichment", r"alpha enhancement",
-    r"stellar nucleosynthesis", r"IMF", r"yield",
-    r"mass[- ]metallicity", r"fundamental metallicity",
-    
-    # Galaxy Evolution & Morphology
-    r"galax(y|ies)", r"co[- ]?evolution", r"merger", r"interaction",
-    r"morphology", r"bulge", r"disk", r"bar", r"spiral arm",
-    r"elliptical", r"lenticular", r"irregular",
-    r"stellar mass", r"halo mass", r"dark matter halo",
-    
-    # Star Formation & Feedback
-    r"star formation", r"SFR", r"specific star formation",
-    r"main sequence", r"starburst", r"quenching",
-    r"stellar feedback", r"supernova", r"stellar wind",
-    r"HII region", r"molecular cloud", r"ISM",
-    
-    # Environment & Large Scale
-    r"environment", r"cluster", r"group", r"field",
-    r"satellite", r"central", r"halo occupation",
-    r"cosmic web", r"filament", r"void",
-    
-    # Observations & Surveys
-    r"SDSS", r"GAIA", r"HST", r"JWST", r"ALMA",
-    r"integral field", r"IFU", r"spectroscopy",
-    r"photometry", r"imaging", r"redshift survey",
-]
-KEYWORDS_RE = re.compile("|".join(KEYWORDS), re.IGNORECASE)
+# --- Interessi scientifici per la pre-selezione ---
+# Modifica questa stringa per affinare la selezione!
+SCIENTIFIC_INTERESTS = """
+My core research interests are:
+- Active Galactic Nuclei (AGN) physics, including accretion, feedback, and outflows.
+- The co-evolution of supermassive black holes (SMBHs) and their host galaxies.
+- Galaxy evolution, particularly galaxy mergers, morphology, and quenching processes.
+- Emission line diagnostics (e.g., BPT diagrams), photoionization modeling, and metallicity studies.
+- Connections between AGN activity and star formation in galaxies.
+"""
 
-# Prompt per la fase di selezione semantica su titoli
-SELECTION_SYSTEM = """You are an expert astrophysicist. Your job is to quickly identify which paper titles are most relevant to galaxy evolution and AGN physics research from today's arXiv submissions."""
+# --- Prompt Templates ---
+SELECTION_PROMPT_TEMPLATE = f"""
+You are an expert astrophysicist assistant. Your task is to select the 5 most relevant paper titles from a list based on specific research interests.
 
-SELECTION_TEMPLATE = """Today's astro-ph.GA paper titles ({date_utc}):
+<Interests>
+{SCIENTIFIC_INTERESTS}
+</Interests>
 
-{paper_list}
+Here is the list of today's new paper titles from arXiv astro-ph.GA:
+<Titles>
+{{paper_list}}
+</Titles>
 
-Task: Select the 5 MOST RELEVANT titles for galaxy evolution and AGN research.
+Task: Identify the 5 titles that are most semantically aligned with the interests described above.
+Respond with ONLY the paper numbers, separated by commas (e.g., "1, 3, 5, 7, 9"). Do not add any other text or explanation.
+"""
 
-Look for titles about:
-- Active galactic nuclei, quasars, black holes
-- Galaxy evolution, morphology, stellar mass
-- Emission lines, spectroscopy, metallicity
-- Feedback, outflows, star formation
-- AGN-host galaxy connections
+SUMMARY_PROMPT_TEMPLATE = """
+You are an expert astrophysicist. Your task is to provide concise, technical summaries of selected arXiv papers for a research group.
 
-Respond with ONLY the paper numbers (e.g., "1, 3, 5, 7, 9"). No explanations."""
-
-# Prompt ottimizzato per analisi dettagliata
-SYSTEM_PROMPT = """You are an expert astrophysicist specializing in galaxy evolution and AGN physics. 
-You analyze arXiv papers daily and provide technical summaries for researchers.
-
-Your task: Review today's selected astro-ph.GA submissions and identify papers relevant to:
-- Active galactic nuclei (AGN) and black hole physics
-- Galaxy evolution and AGN-galaxy coevolution  
-- Emission line analysis and photoionization modeling
-- Metallicity measurements and chemical evolution
-- Feedback processes and outflows
-
-Write in clear, technical English for expert readers. Be concise but informative."""
-
-USER_TEMPLATE = """Today's selected arXiv astro-ph.GA papers ({date_utc}):
-
+Here are the selected papers for today ({date_utc}):
 {paper_block}
 
-Please analyze these papers and provide:
+Your task is twofold:
 
-1. For each RELEVANT paper, write exactly this format:
-**Paper: [Title]**
-Authors: [First author et al.]
-Link: [arXiv URL]
-Summary: [2-3 sentences describing methods, key results, and significance for galaxy evolution/AGN research]
+1.  For EACH of the {paper_count} papers provided, write a summary in exactly this format:
+    **Paper: [Title]**
+    Authors: [First Author et al.]
+    Link: [arXiv URL]
+    Summary: [A concise 2-3 sentence summary of the abstract. Focus on methods, key results, and significance for galaxy evolution or AGN research.]
 
-2. After all papers, add:
-**Daily Overview:**
-[Brief synthesis of today's trends and notable findings across all submissions]
+2.  After summarizing all papers, add a final overview paragraph in this format:
+    **Daily Highlights:**
+    [A brief synthesis of today's key findings. Connect the themes of the selected papers if possible. What are the most notable results or trends today?]
+"""
 
-Focus only on papers directly relevant to galaxy evolution, AGN physics, or emission line studies. Skip papers on stellar physics, cosmology, or unrelated topics."""
+# --- Funzioni Principali ---
 
-def fetch_html():
-    r = requests.get(ARXIV_NEW_URL, timeout=30, headers={"User-Agent":"Mozilla/5.0"})
-    r.raise_for_status()
-    return r.text
-
-def parse_arxiv(html: str):
-    soup = BeautifulSoup(html, "lxml")
-    items = []
-    for h3 in soup.select("h3"):
-        section = h3.get_text(strip=True)
-        dl = h3.find_next_sibling("dl")
-        if not dl: 
-            continue
-        for dt, dd in zip(dl.select("dt"), dl.select("dd")):
-            a_id = dt.select_one("a[href*='/abs/']")
-            if not a_id: 
-                continue
-            link = "https://arxiv.org" + a_id.get("href")
-            arxiv_id = a_id.get_text(strip=True).replace("arXiv:", "")
-            title_tag = dd.select_one("div.list-title")
-            title = title_tag.get_text(" ", strip=True).replace("Title: ", "") if title_tag else ""
-            authors_tag = dd.select_one("div.list-authors")
-            authors = authors_tag.get_text(" ", strip=True).replace("Authors:", "").strip() if authors_tag else ""
-            # Estrai solo il primo autore per semplicità
-            first_author = authors.split(",")[0].strip() if authors else "Unknown"
-            
-            subj_tag = dd.select_one("div.list-subjects")
-            primary_cat = "astro-ph"
-            if subj_tag:
-                sraw = subj_tag.get_text(" ", strip=True).replace("Subjects:", "").strip()
-                m = re.search(r"(astro-ph\.[A-Z]{2}|astro-ph)", sraw)
-                if m: primary_cat = m.group(1)
-            abstract_tag = dd.select_one("p.mathjax")
-            abstract = abstract_tag.get_text(" ", strip=True) if abstract_tag else ""
-            
-            items.append({
-                "section": section, "arxiv_id": arxiv_id, "title": title,
-                "authors": authors, "first_author": first_author, "link": link, 
-                "primary_cat": primary_cat, "abstract": abstract
-            })
-    return items
-
-def build_selection_list(items):
-    """Costruisce una lista solo titoli per selezione velocissima"""
-    lines = []
-    for i, paper in enumerate(items, 1):
-        title = paper.get('title', '')
-        lines.append(f"{i}. {title}")
-    
-    return "\n".join(lines)
-
-def run_llm_selection(items):
-    """Fase 1: LLM seleziona i paper più rilevanti basandosi sui titoli"""
-    if len(items) <= 5:
-        return items  # Se già pochi, prendi tutti
-    
-    date_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    paper_list = build_selection_list(items)
-    
-    selection_prompt = SELECTION_TEMPLATE.format(
-        date_utc=date_utc, 
-        paper_list=paper_list
-    )
-    
+def fetch_and_parse_arxiv():
+    """
+    Esegue lo scraping della pagina arXiv e estrae i dati dei paper,
+    ignorando cross-listing e replacement.
+    """
+    logging.info(f"1. Fetching data from {ARXIV_URL}...")
     try:
-        print(f"LLM selection: {len(items)} papers → choosing best 5 based on titles...")
+        response = requests.get(ARXIV_URL, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+        response.raise_for_status()
+    except requests.RequestException as e:
+        logging.error(f"Failed to fetch arXiv page: {e}")
+        return []
+
+    logging.info("Parsing HTML content...")
+    soup = BeautifulSoup(response.text, "lxml")
+    
+    # Seleziona solo la sezione "New submissions"
+    new_submissions_header = soup.find('h3', string=re.compile(r'New submissions'))
+    if not new_submissions_header:
+        logging.warning("Could not find the 'New submissions' section.")
+        return []
         
-        # Prompt compatto per selezione veloce
-        full_prompt = f"<|im_start|>system\n{SELECTION_SYSTEM}<|im_end|>\n<|im_start|>user\n{selection_prompt}<|im_end|>\n<|im_start|>assistant\n"
-        
-        cmd = [
-            LLAMA_BIN, "-m", LLM_MODEL_PATH,
-            "-p", full_prompt,
-            "-n", "30",  # Ancora più breve - solo numeri
-            "-c", "2048", # Context molto ridotto - solo titoli
-            "--seed", str(SEED),
-            "--temp", "0.05",  # Estremamente deterministico
-            "--no-display-prompt",
-            "-t", str(os.cpu_count() or 4),
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)  # 1 minuto
-        
-        if result.returncode != 0:
-            print("Selection LLM failed, using keyword fallback")
-            return keyword_fallback_selection(items)
-        
+    dl_element = new_submissions_header.find_next_sibling("dl")
+    if not dl_element:
+        logging.warning("Could not find the list of papers after the 'New submissions' header.")
+        return []
+
+    papers = []
+    for dt, dd in zip(dl_element.select("dt"), dl_element.select("dd")):
+        link_tag = dt.select_one("a[href*='/abs/']")
+        if not link_tag:
+            continue
+
+        title_tag = dd.select_one("div.list-title")
+        authors_tag = dd.select_one("div.list-authors")
+        abstract_tag = dd.select_one("p.mathjax")
+
+        # Estrai il primo autore
+        authors_text = authors_tag.get_text(" ", strip=True).replace("Authors:", "").strip() if authors_tag else ""
+        first_author = authors_text.split(",")[0].strip() if authors_text else "N/A"
+
+        papers.append({
+            "title": title_tag.get_text(" ", strip=True).replace("Title: ", ""),
+            "first_author": first_author,
+            "link": "https://arxiv.org" + link_tag.get("href"),
+            "abstract": abstract_tag.get_text(" ", strip=True).strip() if abstract_tag else ""
+        })
+    
+    logging.info(f"Found {len(papers)} new papers.")
+    return papers
+
+def select_papers_with_llm(papers):
+    """
+    Usa l'LLM per selezionare i 5 paper più rilevanti basandosi sui titoli.
+    """
+    logging.info("2. Starting LLM pre-selection based on titles...")
+    if len(papers) <= 5:
+        logging.info("Fewer than 5 papers found, selecting all of them.")
+        return papers
+
+    # Prepara la lista di titoli per il prompt
+    titles_list_str = "\n".join([f"{i+1}. {p['title']}" for i, p in enumerate(papers)])
+    prompt = SELECTION_PROMPT_TEMPLATE.format(paper_list=titles_list_str)
+    
+    # Formato Qwen2
+    full_prompt = f"<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
+    
+    cmd = [
+        LLAMA_BIN, "-m", LLM_MODEL_PATH,
+        "-p", full_prompt,
+        "-n", "30",              # Pochi token, servono solo numeri
+        "-c", "4096",            # Context sufficiente per molti titoli
+        "--seed", str(SEED),
+        "--temp", "0.1",         # Molto deterministico
+        "--no-display-prompt"
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=True)
         output = result.stdout.strip()
         
-        # Estrai numeri dalla risposta (es. "1, 3, 5, 7, 9")
+        # Estrae i numeri in modo robusto
         numbers = re.findall(r'\b(\d+)\b', output)
-        selected_indices = [int(n) - 1 for n in numbers if n.isdigit() and 1 <= int(n) <= len(items)]
+        selected_indices = {int(n) - 1 for n in numbers if n.isdigit() and 0 < int(n) <= len(papers)}
         
-        if len(selected_indices) >= 3:  # Almeno 3 paper validi
-            selected = [items[i] for i in selected_indices[:5]]  # Max 5
-            print(f"LLM selected papers: {[i+1 for i in selected_indices[:5]]}")
-            return selected
-        else:
-            print("LLM selection invalid, using keyword fallback")
-            return keyword_fallback_selection(items)
-            
-    except Exception as e:
-        print(f"Selection LLM error: {e}")
-        return keyword_fallback_selection(items)
+        if len(selected_indices) < 3:
+            logging.warning(f"LLM selection returned too few valid indices ({len(selected_indices)}). Output: '{output}'")
+            raise ValueError("LLM selection failed.")
 
-def keyword_fallback_selection(items):
-    """Fallback: selezione con keywords se LLM fallisce"""
-    candidates = []
-    for it in items:
-        text = f"{it.get('title','')} {it.get('abstract','')}"
-        kw_ok = bool(KEYWORDS_RE.search(text))
-        if kw_ok:
-            candidates.append(it)
+        selected_papers = [papers[i] for i in sorted(list(selected_indices))[:5]]
+        logging.info(f"LLM selected {len(selected_papers)} papers: {[p['title'][:50]+'...' for p in selected_papers]}")
+        return selected_papers
+
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, ValueError) as e:
+        logging.error(f"LLM selection failed: {e}. Falling back to selecting the first 5 papers.")
+        return papers[:5]
+
+def summarize_papers_and_generate_overview(papers):
+    """
+    Prende i paper selezionati, crea un prompt unico con i loro abstract
+    e chiede all'LLM di sintetizzarli e creare un overview.
+    """
+    logging.info("3. Starting LLM summarization for selected papers...")
     
-    return candidates[:5]
+    # Costruisce il blocco di paper per il prompt
+    paper_block_lines = []
+    for i, p in enumerate(papers, 1):
+        paper_block_lines.append(f"--- Paper {i} ---\nTitle: {p['title']}\nAuthors: {p['first_author']} et al.\nLink: {p['link']}\nAbstract: {p['abstract']}\n")
+    paper_block = "\n".join(paper_block_lines)
 
-def filter_candidates(items):
-    """Nuova funzione: usa LLM per selezione semantica sui titoli"""
-    return run_llm_selection(items)
+    date_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    prompt = SUMMARY_PROMPT_TEMPLATE.format(
+        date_utc=date_utc,
+        paper_block=paper_block,
+        paper_count=len(papers)
+    )
 
-def _truncate(s: str, max_chars: int) -> str:
-    s = (s or "").strip()
-    if len(s) <= max_chars:
-        return s
-    return s[:max_chars].rsplit(" ", 1)[0] + "..."
-
-def build_paper_block(candidates):
-    """Costruisce il blocco input per l'LLM di analisi dettagliata"""
-    lines = []
-    for i, p in enumerate(candidates, 1):
-        title = _truncate(p.get("title", ""), 150)
-        first_author = p.get("first_author", "")
-        abstract = _truncate(p.get("abstract", ""), 400)
-        link = p.get("link", "")
-        
-        lines.append(f"{i}. Title: {title}")
-        lines.append(f"   Authors: {first_author} et al.")
-        lines.append(f"   Link: {link}")
-        lines.append(f"   Abstract: {abstract}")
-        lines.append("")
-    
-    block = "\n".join(lines)
-    print(f"Input size for detailed analysis: {len(block)} chars (~{len(block)//4} tokens)")
-    return block
-
-def run_llama(system_prompt: str, user_prompt: str) -> str:
-    """Esegue llama.cpp per analisi dettagliata"""
-    if not os.path.exists(LLAMA_BIN):
-        raise RuntimeError(f"llama.cpp binary not found at {LLAMA_BIN}")
-    
-    if not os.path.exists(LLM_MODEL_PATH):
-        raise RuntimeError(f"Model file not found at {LLM_MODEL_PATH}")
-
-    # Usa il formato chat template di Qwen2.5
-    full_prompt = f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
+    full_prompt = f"<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
 
     cmd = [
         LLAMA_BIN, "-m", LLM_MODEL_PATH,
         "-p", full_prompt,
-        "-n", str(MAX_TOKENS),
-        "-c", str(CTX),
+        "-n", str(MAX_TOKENS_SUMMARY),
+        "-c", str(CTX_SIZE),
         "--seed", str(SEED),
-        "--temp", "0.3",  
+        "--temp", "0.4",
         "--repeat-penalty", "1.1",
-        "--no-display-prompt",
-        "-t", str(os.cpu_count() or 4),
-        "-ngl", "0",
-        "--mlock",
-        "--no-mmap",
+        "--no-display-prompt"
     ]
 
-    print(f"Running detailed analysis: {os.path.basename(LLM_MODEL_PATH)}")
-    
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)  # 15 minuti
-        if result.returncode != 0:
-            print(f"STDERR: {result.stderr[-300:]}")
-            print(f"STDOUT preview: {result.stdout[:200]}")
-            raise RuntimeError(f"llama-cli failed with code {result.returncode}")
-        
+        logging.info(f"Running summarization with {os.path.basename(LLM_MODEL_PATH)}...")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=900, check=True) # 15 min timeout
         output = result.stdout.strip()
-        if not output:
-            raise RuntimeError("Empty output from llama-cli")
         
-        # Rimuovi eventuali token di fine
-        output = re.sub(r'<\|im_end\|>.*', '', output, flags=re.DOTALL)
-        return output.strip()
-        
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("llama-cli timed out after 900 seconds")
+        # Pulizia dell'output
+        output = re.sub(r'<\|im_end\|>.*', '', output, flags=re.DOTALL).strip()
 
-def clean_output(text: str) -> str:
-    """Pulisce l'output del modello"""
-    # Rimuovi prompt artifacts
-    text = re.sub(r'^.*?(\*\*Paper:|Daily Overview:)', r'\1', text, flags=re.DOTALL)
-    
-    # Rimuovi ripetizioni del prompt
-    for remove in ["Today's arXiv", "Please analyze", "Focus only on"]:
-        if remove in text:
-            idx = text.find(remove)
-            text = text[:idx]
-    
-    return text.strip()
+        if not output or "**Paper:" not in output:
+            raise ValueError("LLM output is empty or malformed.")
+            
+        logging.info(f"Successfully generated summary of {len(output)} characters.")
+        return output
 
-def fallback_list(candidates):
-    """Lista di fallback se l'LLM fallisce"""
-    lines = ["⚠️ LLM processing failed. Today's relevant astro-ph papers:\n"]
-    for p in candidates:
-        title = _truncate(p.get("title", ""), 100)
-        lines.append(f"• {title}")
-        lines.append(f"  {p.get('link', '')}\n")
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, ValueError) as e:
+        logging.error(f"LLM summarization failed: {e}")
+        return None
+
+def build_fallback_message(papers):
+    """Crea un messaggio di fallback se la sintesi LLM fallisce."""
+    lines = [f"⚠️ **LLM Summarization Failed!**\n\nHere are the selected papers for today:\n"]
+    for p in papers:
+        lines.append(f"**- {p['title']}**")
+        lines.append(f"  *by {p['first_author']} et al.*")
+        lines.append(f"  <{p['link']}>\n")
     return "\n".join(lines)
 
-def post_discord(text: str):
-    """Posta su Discord dividendo in chunks se necessario"""
+def post_to_discord(content):
+    """Invia il contenuto a Discord, gestendo i messaggi lunghi."""
     if not DISCORD_WEBHOOK:
-        print("[WARN] DISCORD_WEBHOOK not set.")
+        logging.warning("DISCORD_WEBHOOK not set. Skipping post.")
+        print("\n--- BEGIN DISCORD CONTENT ---\n")
+        print(content)
+        print("\n--- END DISCORD CONTENT ---\n")
         return
+
+    logging.info("4. Posting message to Discord...")
     
-    # Dividi in chunks da max 1900 caratteri
+    # Aggiunge un titolo al messaggio
+    header = f"### 🔭 Astro-ph.GA Daily Briefing ({datetime.now(timezone.utc).strftime('%d %b %Y')})\n\n"
+    content = header + content
+    
+    max_len = 1950  # Un po' di margine
     chunks = []
-    lines = text.split('\n')
-    current_chunk = ""
     
-    for line in lines:
-        if len(current_chunk) + len(line) + 1 > 1900:
-            if current_chunk:
+    if len(content) <= max_len:
+        chunks.append(content)
+    else:
+        # Splitting logic
+        current_chunk = ""
+        for part in content.split('\n\n'): # Splitta per paragrafi
+            if len(current_chunk) + len(part) + 2 > max_len:
                 chunks.append(current_chunk)
-            current_chunk = line
-        else:
-            current_chunk += "\n" + line if current_chunk else line
-    
-    if current_chunk:
+                current_chunk = part
+            else:
+                current_chunk += "\n\n" + part if current_chunk else part
         chunks.append(current_chunk)
-    
-    print(f"Sending {len(chunks)} Discord chunks")
-    
+
     for i, chunk in enumerate(chunks):
-        if len(chunks) > 1:
-            prefix = f"**Part {i+1}/{len(chunks)}**\n" if i == 0 else f"**Part {i+1}/{len(chunks)} (cont.)**\n"
-            chunk = prefix + chunk
-        
-        payload = {"content": chunk, "flags": 4096}  # SUPPRESS_EMBEDS
-        response = requests.post(DISCORD_WEBHOOK, json=payload, timeout=20)
-        
-        if not response.ok:
-            print(f"Discord POST failed: {response.status_code} - {response.text[:100]}")
+        payload = {"content": chunk}
+        try:
+            response = requests.post(DISCORD_WEBHOOK, json=payload, timeout=20)
+            response.raise_for_status()
+            logging.info(f"Posted chunk {i+1}/{len(chunks)} to Discord successfully.")
+        except requests.RequestException as e:
+            logging.error(f"Failed to post chunk {i+1} to Discord: {e}")
+            if response:
+                logging.error(f"Response: {response.text}")
+            break
+
 
 def main():
-    print("Starting arXiv analysis with semantic title-based filtering...")
-    
-    html = fetch_html()
-    items = parse_arxiv(html)
-    
-    if not items:
-        post_discord("No astro-ph.GA papers found today.")
+    """Flusso di lavoro principale."""
+    # 0. Verifica prerequisiti
+    if not all([DISCORD_WEBHOOK, LLAMA_BIN, LLM_MODEL_PATH]):
+        logging.error("Missing critical environment variables. Exiting.")
         return
-    
-    print(f"Found {len(items)} total papers")
-    
-    # Selezione semantica con LLM basata sui titoli
-    candidates = filter_candidates(items)
-    
-    if not candidates:
-        post_discord("No relevant papers found today.")
+    if not os.path.exists(LLAMA_BIN) or not os.path.exists(LLM_MODEL_PATH):
+        logging.error("LLM binary or model file not found. Exiting.")
         return
+
+    # 1. Scraping
+    all_papers = fetch_and_parse_arxiv()
+    if not all_papers:
+        post_to_discord("No new papers found on astro-ph.GA today.")
+        return
+
+    # 2. Selezione con LLM
+    selected_papers = select_papers_with_llm(all_papers)
+    if not selected_papers:
+        post_to_discord("Paper selection failed and no fallback was possible.")
+        return
+
+    # 3. Sintesi con LLM
+    final_message = summarize_papers_and_generate_overview(selected_papers)
+    if not final_message:
+        final_message = build_fallback_message(selected_papers)
+
+    # 4. Invio a Discord
+    post_to_discord(final_message)
     
-    print(f"Selected {len(candidates)} papers for detailed analysis")
-    
-    # Analisi dettagliata dei paper selezionati
-    date_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    paper_block = build_paper_block(candidates)
-    user_prompt = USER_TEMPLATE.format(date_utc=date_utc, paper_block=paper_block)
-    
-    try:
-        print("Running detailed LLM analysis...")
-        output = run_llama(SYSTEM_PROMPT, user_prompt)
-        output = clean_output(output)
-        
-        if len(output) < 100 or "**Paper:" not in output:
-            raise RuntimeError("Output too short or malformed")
-        
-        print(f"Generated {len(output)} characters of analysis")
-        post_discord(output)
-        
-    except Exception as e:
-        print(f"Detailed analysis failed: {e}")
-        fallback = fallback_list(candidates)
-        post_discord(fallback)
-    
-    print("Done!")
+    logging.info("Workflow completed successfully.")
+
 
 if __name__ == "__main__":
     main()
