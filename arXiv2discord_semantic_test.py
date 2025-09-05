@@ -1,4 +1,4 @@
-# FILE: main.py (versione corretta)
+# FILE: main.py (versione corretta e definitiva)
 
 import os
 import re
@@ -86,52 +86,58 @@ def fetch_and_parse_arxiv():
     logging.info("Parsing HTML content...")
     soup = BeautifulSoup(response.text, "lxml")
     
-    # Seleziona solo la sezione "New submissions"
-    new_submissions_header = soup.find('h3', string=re.compile(r'New submissions'))
-    if not new_submissions_header:
-        logging.warning("Could not find the 'New submissions' section header.")
+    # --- INIZIO NUOVA LOGICA DI PARSING ---
+    # Basata sulla struttura HTML reale fornita.
+    
+    # 1. Trova il contenitore principale <dl> che ha l'ID 'articles'.
+    articles_dl = soup.find('dl', id='articles')
+    if not articles_dl:
+        logging.warning("Could not find the main articles list (<dl id='articles'>).")
         return []
-        
-    # --- INIZIO CODICE MODIFICATO ---
-    # Cerca il primo tag <dl> che segue l'intestazione, ignorando altri tag intermedi.
-    # Questo è molto più robusto di find_next_sibling().
-    dl_element = None
-    for sibling in new_submissions_header.find_next_siblings():
-        if sibling.name == 'dl':
-            dl_element = sibling
-            break
-        if sibling.name == 'h3':
-            # Se incontriamo il prossimo h3 (es. "Cross-lists"), ci fermiamo.
-            break
-    # --- FINE CODICE MODIFICATO ---
 
-    if not dl_element:
-        logging.warning("Could not find the list of papers (<dl> tag) after the 'New submissions' header.")
+    # 2. All'interno del contenitore, trova l'header H3 per le "New submissions".
+    new_submissions_header = articles_dl.find('h3', string=re.compile(r'New submissions'))
+    if not new_submissions_header:
+        logging.warning("Could not find the 'New submissions' header inside the articles list.")
         return []
 
     papers = []
-    for dt, dd in zip(dl_element.select("dt"), dl_element.select("dd")):
-        link_tag = dt.select_one("a[href*='/abs/']")
-        if not link_tag:
-            continue
+    # 3. Itera su tutti gli elementi *dopo* l'header H3, all'interno dello stesso genitore.
+    for element in new_submissions_header.find_next_siblings():
+        # 4. Se incontriamo un altro H3, significa che la sezione "New" è finita.
+        if element.name == 'h3':
+            break
+        
+        # 5. Se l'elemento è un <dt>, è l'inizio di un paper.
+        if element.name == 'dt':
+            # Il <dd> con i dettagli è il suo immediato fratello.
+            dd = element.find_next_sibling('dd')
+            if not dd:
+                continue
 
-        title_tag = dd.select_one("div.list-title")
-        authors_tag = dd.select_one("div.list-authors")
-        abstract_tag = dd.select_one("p.mathjax")
+            link_tag = element.select_one("a[href*='/abs/']")
+            title_tag = dd.select_one("div.list-title")
+            authors_tag = dd.select_one("div.list-authors")
+            abstract_tag = dd.select_one("p.mathjax")
 
-        # Estrai il primo autore
-        authors_text = authors_tag.get_text(" ", strip=True).replace("Authors:", "").strip() if authors_tag else ""
-        first_author = authors_text.split(",")[0].strip() if authors_text else "N/A"
+            if not all([link_tag, title_tag, authors_tag, abstract_tag]):
+                continue
 
-        papers.append({
-            "title": title_tag.get_text(" ", strip=True).replace("Title: ", ""),
-            "first_author": first_author,
-            "link": "https://arxiv.org" + link_tag.get("href"),
-            "abstract": abstract_tag.get_text(" ", strip=True).strip() if abstract_tag else ""
-        })
+            # Estrai il primo autore
+            authors_text = authors_tag.get_text(" ", strip=True).replace("Authors:", "").strip()
+            first_author = authors_text.split(",")[0].strip() if authors_text else "N/A"
+
+            papers.append({
+                "title": title_tag.get_text(" ", strip=True).replace("Title: ", ""),
+                "first_author": first_author,
+                "link": "https://arxiv.org" + link_tag.get("href"),
+                "abstract": abstract_tag.get_text(" ", strip=True).strip()
+            })
+    # --- FINE NUOVA LOGICA DI PARSING ---
     
     logging.info(f"Found {len(papers)} new papers.")
     return papers
+
 
 def select_papers_with_llm(papers):
     """
@@ -142,28 +148,21 @@ def select_papers_with_llm(papers):
         logging.info("Fewer than 6 papers found, selecting all of them.")
         return papers
 
-    # Prepara la lista di titoli per il prompt
     titles_list_str = "\n".join([f"{i+1}. {p['title']}" for i, p in enumerate(papers)])
     prompt = SELECTION_PROMPT_TEMPLATE.format(paper_list=titles_list_str)
     
-    # Formato Qwen2
     full_prompt = f"<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
     
     cmd = [
         LLAMA_BIN, "-m", LLM_MODEL_PATH,
-        "-p", full_prompt,
-        "-n", "30",              # Pochi token, servono solo numeri
-        "-c", "4096",            # Context sufficiente per molti titoli
-        "--seed", str(SEED),
-        "--temp", "0.1",         # Molto deterministico
-        "--no-display-prompt"
+        "-p", full_prompt, "-n", "30", "-c", "4096",
+        "--seed", str(SEED), "--temp", "0.1", "--no-display-prompt"
     ]
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=True)
         output = result.stdout.strip()
         
-        # Estrae i numeri in modo robusto
         numbers = re.findall(r'\b(\d+)\b', output)
         selected_indices = {int(n) - 1 for n in numbers if n.isdigit() and 0 < int(n) <= len(papers)}
         
@@ -186,39 +185,26 @@ def summarize_papers_and_generate_overview(papers):
     """
     logging.info("3. Starting LLM summarization for selected papers...")
     
-    # Costruisce il blocco di paper per il prompt
     paper_block_lines = []
     for i, p in enumerate(papers, 1):
         paper_block_lines.append(f"--- Paper {i} ---\nTitle: {p['title']}\nAuthors: {p['first_author']} et al.\nLink: {p['link']}\nAbstract: {p['abstract']}\n")
     paper_block = "\n".join(paper_block_lines)
 
     date_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    prompt = SUMMARY_PROMPT_TEMPLATE.format(
-        date_utc=date_utc,
-        paper_block=paper_block,
-        paper_count=len(papers)
-    )
+    prompt = SUMMARY_PROMPT_TEMPLATE.format(date_utc=date_utc, paper_block=paper_block, paper_count=len(papers))
 
     full_prompt = f"<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
 
     cmd = [
         LLAMA_BIN, "-m", LLM_MODEL_PATH,
-        "-p", full_prompt,
-        "-n", str(MAX_TOKENS_SUMMARY),
-        "-c", str(CTX_SIZE),
-        "--seed", str(SEED),
-        "--temp", "0.4",
-        "--repeat-penalty", "1.1",
-        "--no-display-prompt"
+        "-p", full_prompt, "-n", str(MAX_TOKENS_SUMMARY), "-c", str(CTX_SIZE),
+        "--seed", str(SEED), "--temp", "0.4", "--repeat-penalty", "1.1", "--no-display-prompt"
     ]
 
     try:
         logging.info(f"Running summarization with {os.path.basename(LLM_MODEL_PATH)}...")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=900, check=True) # 15 min timeout
-        output = result.stdout.strip()
-        
-        # Pulizia dell'output
-        output = re.sub(r'<\|im_end\|>.*', '', output, flags=re.DOTALL).strip()
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=900, check=True)
+        output = re.sub(r'<\|im_end\|>.*', '', result.stdout.strip(), flags=re.DOTALL).strip()
 
         if not output or "**Paper:" not in output:
             raise ValueError("LLM output is empty or malformed.")
@@ -243,26 +229,21 @@ def post_to_discord(content):
     """Invia il contenuto a Discord, gestendo i messaggi lunghi."""
     if not DISCORD_WEBHOOK:
         logging.warning("DISCORD_WEBHOOK not set. Skipping post.")
-        print("\n--- BEGIN DISCORD CONTENT ---\n")
-        print(content)
-        print("\n--- END DISCORD CONTENT ---\n")
+        print("\n--- BEGIN DISCORD CONTENT ---\n" + content + "\n--- END DISCORD CONTENT ---\n")
         return
 
     logging.info("4. Posting message to Discord...")
-    
-    # Aggiunge un titolo al messaggio
     header = f"### 🔭 Astro-ph.GA Daily Briefing ({datetime.now(timezone.utc).strftime('%d %b %Y')})\n\n"
     content = header + content
     
-    max_len = 1950  # Un po' di margine
+    max_len = 1950
     chunks = []
     
     if len(content) <= max_len:
         chunks.append(content)
     else:
-        # Splitting logic
         current_chunk = ""
-        for part in content.split('\n\n'): # Splitta per paragrafi
+        for part in content.split('\n\n'):
             if len(current_chunk) + len(part) + 2 > max_len:
                 chunks.append(current_chunk)
                 current_chunk = part
@@ -282,10 +263,8 @@ def post_to_discord(content):
                 logging.error(f"Response: {response.text}")
             break
 
-
 def main():
     """Flusso di lavoro principale."""
-    # 0. Verifica prerequisiti
     if not all([DISCORD_WEBHOOK, LLAMA_BIN, LLM_MODEL_PATH]):
         logging.error("Missing critical environment variables. Exiting.")
         return
@@ -293,28 +272,22 @@ def main():
         logging.error("LLM binary or model file not found. Exiting.")
         return
 
-    # 1. Scraping
     all_papers = fetch_and_parse_arxiv()
     if not all_papers:
         post_to_discord("No new papers found on astro-ph.GA today.")
         return
 
-    # 2. Selezione con LLM
     selected_papers = select_papers_with_llm(all_papers)
     if not selected_papers:
         post_to_discord("Paper selection failed and no fallback was possible.")
         return
 
-    # 3. Sintesi con LLM
     final_message = summarize_papers_and_generate_overview(selected_papers)
     if not final_message:
         final_message = build_fallback_message(selected_papers)
 
-    # 4. Invio a Discord
     post_to_discord(final_message)
-    
     logging.info("Workflow completed successfully.")
-
 
 if __name__ == "__main__":
     main()
