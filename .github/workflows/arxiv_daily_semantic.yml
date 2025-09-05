@@ -77,7 +77,7 @@ jobs:
 
       - name: 9. Run arXiv Scraper and LLM Analysis
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_prova }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           LLAMA_BIN: ${{ env.LLAMA_BIN }}
           LLM_MODEL_PATH: models/Qwen2.5-7B-Instruct-Q4_K_M.gguf
           # Parametri LLM resi più leggibili
